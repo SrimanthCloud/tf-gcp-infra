@@ -1,0 +1,26 @@
+name: 'TF workflow'
+
+on:
+  pull_request:
+    branches: [ "main" ]
+  push:
+    branches: [ "main" ]
+
+jobs:
+  terraformjob:
+    name: 'Terraform validate'
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v1
+
+    - name: Terraform steps
+      run: |
+        terraform init
+        terraform init -upgrade
+        terraform fmt
+        terraform validate
