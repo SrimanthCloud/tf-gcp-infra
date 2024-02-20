@@ -3,9 +3,9 @@ variable "project_id" {
   default = "linen-totality-412004"
 }
 
-variable "region" {
+variabl "region" {
   description = "The GCP region to deploy resources"
-  default     = "us-east1"
+  default     = "us"
 }
 
 variable "vpc_name" {
