@@ -1,21 +1,26 @@
 variable "project_id" {
+
   description = "ID for the project"
 }
 
 variable "region" {
   description = "The GCP region to deploy resources"
+
 }
 
 variable "vpc_name" {
   description = "The name of the VPC to create"
+
 }
 
 variable "webapp_subnet_cidr" {
   description = "CIDR for the webapp subnet"
+
 }
 
 variable "db_subnet_cidr" {
   description = "CIDR for the db subnet"
+
 }
 
 
