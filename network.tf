@@ -12,7 +12,7 @@ resource "google_compute_subnetwork" "webapp_subnet" {
   region        = var.region
   network       = google_compute_network.vpc.id
   private_ip_google_access = true
-
+}
 
 resource "google_compute_subnetwork" "db_subnet" {
   name          = "${var.vpc_name}-db"
