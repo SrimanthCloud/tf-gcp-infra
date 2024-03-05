@@ -12,7 +12,7 @@ resource "google_compute_subnetwork" "webapp_subnet" {
   region        = var.region
   network       = google_compute_network.vpc.id
   private_ip_google_access = true
-}
+
 
 resource "google_compute_subnetwork" "db_subnet" {
   name          = "${var.vpc_name}-db"
@@ -79,6 +79,7 @@ resource "google_compute_instance" "vm_instance" {
       
     }
   }
+
 
   metadata = {
     startup-script = "#!/bin/bash\ncat <<EOF > /opt/.env\nDB_HOST=${google_sql_database_instance.cloudsql_instance.private_ip_address}\nDB_NAME=${google_sql_database.webapp_database.name}\nDB_USER=${google_sql_user.webapp_user.name}\nDB_PASSWORD=${random_password.password.result}\nDB_DIALECT=\"mysql\"\nDB_PORT=3306\nEOF\n\nchown csye6225:csye6225 /opt/.env\n"
@@ -162,4 +163,5 @@ resource "google_sql_user" "webapp_user" {
 
 output "cloudsql_private_ip" {
   value = google_sql_database_instance.cloudsql_instance.ip_address
+
 }

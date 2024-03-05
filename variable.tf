@@ -4,18 +4,22 @@ variable "project_id" {
 
 variable "region" {
   description = "The GCP region to deploy resources"
+
 }
 
 variable "vpc_name" {
   description = "The name of the VPC to create"
+
 }
 
 variable "webapp_subnet_cidr" {
   description = "CIDR for the webapp subnet"
+
 }
 
 variable "db_subnet_cidr" {
   description = "CIDR for the db subnet"
+
 }
 
 
@@ -59,6 +63,7 @@ variable "vpc_regional" {
 variable "app_port" {
   description = "The application port to allow through the firewall"
   type        = string 
+
 }
 
 variable "Sql_instance_name" {
@@ -131,6 +136,5 @@ variable "db_name" {
 variable "db_user" {
   description = "The name of the database user."
 }
-
 
 
