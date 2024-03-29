@@ -121,6 +121,16 @@ resource "google_project_iam_binding" "monitoring_metric_writer" {
   ]
 }
 
+
+resource "google_project_iam_binding" "pubsub_publisher" {
+  project = var.project_id
+  role    = "roles/pubsub.publisher"
+ 
+  members = [
+    "serviceAccount:${google_service_account.vm_service_account.email}"
+  ]
+}
+
 data "google_dns_managed_zone" "dns_zone" {
   name        = "gsb-custom-zone"
 }
@@ -211,3 +221,155 @@ output "cloudsql_private_ip" {
   value = google_sql_database_instance.cloudsql_instance.ip_address
 
 }
+
+ 
+# Create a Pub/Sub topic
+resource "google_pubsub_topic" "verify_email" {
+  name = "verify_email"
+  message_retention_duration = "604800s"
+}
+ 
+# Create a Pub/Sub subscription
+resource "google_pubsub_subscription" "my_subscription" {
+  name  = "verify_email_subscription"
+  topic = google_pubsub_topic.verify_email.name
+ 
+    ack_deadline_seconds = 10  
+  push_config {
+    push_endpoint = google_cloudfunctions2_function.verify_email_function.url
+  }
+}
+ 
+# resource "google_dns_record_set" "txt_record_spf" {
+#   name         = data.google_dns_managed_zone.dns_zone.dns_name
+#   type         = "TXT"
+#   ttl          = 300
+#   managed_zone = data.google_dns_managed_zone.dns_zone.dns_name
+
+#   rrdatas = [
+#     "v=spf1 include:mailgun.org ~all"
+#   ]
+# }
+ 
+# resource "google_dns_record_set" "txt_record_dkim" {
+#   name         = "smtp._domainkey.${data.google_dns_managed_zone.dns_zone.dns_name}"
+#   type         = "TXT"
+#   ttl          = 300
+#   managed_zone = data.google_dns_managed_zone.dns_zone.name
+
+#   rrdatas = [
+#     "k=rsa; p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDmsM8T3POENjPTnBV+Gg69fvCiCIFX9t7JIz8aVrZIOuEDIdCWz0ZyJdo0aXc9U66nlhRGT1IpImQUlyW+mbbZ6h8R65Pzy5/lqJPBrbTDrvCN/j5yiKU69xM8pKQFwOpOji86A1dvMdBy/SOIpRMloTaSSsBZq0EiD9Q56wy6cwIDAQAB"
+#   ]
+# }
+ 
+# resource "google_dns_record_set" "mx_record" {
+#   name         = "${data.google_dns_managed_zone.dns_zone.dns_name}"
+#   type         = "MX"
+#   ttl          = 300
+#   managed_zone = data.google_dns_managed_zone.dns_zone.name
+ 
+#   rrdatas = [
+#     "10 mxa.mailgun.org.","20 mxb.mailgun.org."
+#   ]
+ 
+# }
+ 
+# resource "google_dns_record_set" "cname" {
+#   name         = "email.${data.google_dns_managed_zone.dns_zone.dns_name}"
+#   managed_zone = data.google_dns_managed_zone.dns_zone.name
+#   type         = "CNAME"
+#   ttl          = 300
+#   rrdatas      = [
+#     "mailgun.org."
+#   ]
+# }
+
+data "google_iam_policy" "pubsub_viewer" {
+  binding {
+    role = "roles/pubsub.publisher"
+    members = [
+      "serviceAccount:${google_service_account.vm_service_account.email}",
+    ]
+  }
+}
+ 
+resource "google_pubsub_topic_iam_policy" "pubsub_policy" {
+  project = google_pubsub_topic.verify_email.project
+  topic = google_pubsub_topic.verify_email.name
+  policy_data = data.google_iam_policy.pubsub_viewer.policy_data
+}
+ 
+data "google_iam_policy" "pubsub_editor" {
+  binding {
+    role = "roles/editor"
+    members = [
+      "serviceAccount:${google_service_account.vm_service_account.email}",
+    ]
+  }
+}
+ 
+
+
+resource "google_pubsub_subscription_iam_policy" "editor" {
+  subscription = google_pubsub_subscription.my_subscription.name
+  policy_data  = data.google_iam_policy.pubsub_editor.policy_data
+}
+ 
+resource "google_vpc_access_connector" "vpc_connector" {
+  name         = "webapp-vpc-connector"
+  network      = google_compute_network.vpc.self_link
+  region       = var.region
+  ip_cidr_range = "10.2.0.0/28"
+}
+ 
+resource "google_storage_bucket" "serverless-bucket" {
+  name     = "cloud-serverless"
+  location = "US"
+}
+ 
+resource "google_storage_bucket_object" "serverless-archive" {
+  name   = "serverless.zip"
+  bucket = google_storage_bucket.serverless-bucket.name
+  source = "./serverless.zip"
+}
+ 
+resource "google_cloudfunctions2_function" "verify_email_function" {
+  name        = "verify-email-function"
+  description = "Verification of Email"
+  location = "us-east1"
+ 
+  build_config {
+    runtime = "nodejs20"
+    entry_point = "sendVerificationEmail"
+    source {
+      storage_source {
+        bucket = google_storage_bucket.serverless-bucket.name
+        object = google_storage_bucket_object.serverless-archive.name
+      }
+    }
+  }
+ 
+      service_config {
+      vpc_connector = google_vpc_access_connector.vpc_connector.name
+      max_instance_count  = 1
+      available_memory    = "256M"
+      # timeout_seconds     = 60
+      service_account_email = google_service_account.vm_service_account.email
+      environment_variables = {
+    DB_HOST = "${google_sql_database_instance.cloudsql_instance.private_ip_address}"
+    DB_NAME = "${google_sql_database.webapp_database.name}"
+    DB_USER = "${google_sql_user.webapp_user.name}"
+    DB_PASS = "${random_password.password.result}"
+    DB_DIALECT="mysql"
+    DB_PORT = "3306"
+    }
+    }
+
+ 
+    event_trigger {
+    trigger_region = "us-east1"
+    event_type = "google.cloud.pubsub.topic.v1.messagePublished"
+    pubsub_topic = google_pubsub_topic.verify_email.id
+    retry_policy = "RETRY_POLICY_RETRY"
+  }
+  }
