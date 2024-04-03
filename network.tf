@@ -371,6 +371,7 @@ resource "google_compute_region_instance_group_manager" "webapp_group_manager" {
   name     = "webapp-group-manager"
   region   = var.region
   base_instance_name = "webapp"
+  distribution_policy_zones = ["us-east1-b", "us-east1-c", "us-east1-d"] 
 
 
   version {
@@ -389,7 +390,6 @@ resource "google_compute_region_instance_group_manager" "webapp_group_manager" {
     initial_delay_sec = 120
   }
 
-  target_size = 1
 }
 
 resource "google_compute_backend_service" "webapp_backend_service" {
