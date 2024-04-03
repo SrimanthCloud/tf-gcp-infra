@@ -37,13 +37,14 @@ resource "google_compute_route" "webapp_route" {
 resource "google_compute_firewall" "webapplication" {
   name    = "${var.vpc_name}-webapplication"
   network = google_compute_network.vpc.id
+  direction = "INGRESS"
 
   allow {
     protocol = "tcp"
     ports    = [var.app_port]
   }
 
-  source_ranges = ["0.0.0.0/0"]
+  source_ranges = ["130.211.0.0/22", "35.191.0.0/16"]
 }
 
 resource "google_compute_firewall" "deny_ssh" {
@@ -58,17 +59,17 @@ resource "google_compute_firewall" "deny_ssh" {
   source_ranges = ["0.0.0.0/0"]
 }
 
-resource "google_compute_instance" "vm_instance" {
+resource "google_compute_region_instance_template" "vm_instance" {
   name         = var.vm_name  
-  zone         = var.vm_zone
   machine_type = var.vm_machine_type
 
-  boot_disk {
-    initialize_params {
-      image = var.vm_image
-      type  = var.vm_disk_type
-      size  = var.vm_disk_size_gb
-    }
+
+  disk {
+    source_image = var.vm_image
+    auto_delete  = true
+    boot         = true
+    disk_size_gb = var.vm_disk_size_gb
+    disk_type    = var.vm_disk_type
   }
 
   network_interface {
@@ -240,49 +241,7 @@ resource "google_pubsub_subscription" "my_subscription" {
   }
 }
  
-# resource "google_dns_record_set" "txt_record_spf" {
-#   name         = data.google_dns_managed_zone.dns_zone.dns_name
-#   type         = "TXT"
-#   ttl          = 300
-#   managed_zone = data.google_dns_managed_zone.dns_zone.dns_name
 
-#   rrdatas = [
-#     "v=spf1 include:mailgun.org ~all"
-#   ]
-# }
- 
-# resource "google_dns_record_set" "txt_record_dkim" {
-#   name         = "smtp._domainkey.${data.google_dns_managed_zone.dns_zone.dns_name}"
-#   type         = "TXT"
-#   ttl          = 300
-#   managed_zone = data.google_dns_managed_zone.dns_zone.name
-
-#   rrdatas = [
-#     "k=rsa; p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDmsM8T3POENjPTnBV+Gg69fvCiCIFX9t7JIz8aVrZIOuEDIdCWz0ZyJdo0aXc9U66nlhRGT1IpImQUlyW+mbbZ6h8R65Pzy5/lqJPBrbTDrvCN/j5yiKU69xM8pKQFwOpOji86A1dvMdBy/SOIpRMloTaSSsBZq0EiD9Q56wy6cwIDAQAB"
-#   ]
-# }
- 
-# resource "google_dns_record_set" "mx_record" {
-#   name         = "${data.google_dns_managed_zone.dns_zone.dns_name}"
-#   type         = "MX"
-#   ttl          = 300
-#   managed_zone = data.google_dns_managed_zone.dns_zone.name
- 
-#   rrdatas = [
-#     "10 mxa.mailgun.org.","20 mxb.mailgun.org."
-#   ]
- 
-# }
- 
-# resource "google_dns_record_set" "cname" {
-#   name         = "email.${data.google_dns_managed_zone.dns_zone.dns_name}"
-#   managed_zone = data.google_dns_managed_zone.dns_zone.name
-#   type         = "CNAME"
-#   ttl          = 300
-#   rrdatas      = [
-#     "mailgun.org."
-#   ]
-# }
 
 data "google_iam_policy" "pubsub_viewer" {
   binding {
@@ -373,3 +332,106 @@ resource "google_cloudfunctions2_function" "verify_email_function" {
     retry_policy = "RETRY_POLICY_RETRY"
   }
   }
+
+resource "google_compute_health_check" "webapp_health_check" {
+  name               = "webapp-health-check"
+  check_interval_sec = 60
+  timeout_sec        = 10
+  http_health_check {
+    port    = var.app_port
+    request_path = "/healthz"
+  }
+}
+
+resource "google_compute_managed_ssl_certificate" "sslcert" {
+  name = "sslcert"
+  managed {
+    domains = ["gsbcloudservices.me"]
+  }
+}
+
+resource "google_compute_region_autoscaler" "webapp_autoscaler" {
+  name   = "webapp-autoscaler"
+  region = var.region
+  target = google_compute_region_instance_group_manager.webapp_group_manager.id
+
+  autoscaling_policy {
+    max_replicas    = 6
+    min_replicas    = 3
+    cooldown_period = 60
+
+    cpu_utilization {
+      target = 0.05
+    }
+  }
+}
+
+
+resource "google_compute_region_instance_group_manager" "webapp_group_manager" {
+  name     = "webapp-group-manager"
+  region   = var.region
+  base_instance_name = "webapp"
+
+
+  version {
+    name = "v1"
+    instance_template = google_compute_region_instance_template.vm_instance.self_link
+  }
+
+  named_port {
+    name = "http"
+    port = var.app_port
+  }
+
+  auto_healing_policies {
+    
+    health_check = google_compute_health_check.webapp_health_check.self_link
+    initial_delay_sec = 120
+  }
+
+  target_size = 1
+}
+
+resource "google_compute_backend_service" "webapp_backend_service" {
+  name                  = "backendservicename"
+  load_balancing_scheme = "EXTERNAL_MANAGED"
+  port_name             = "http"
+  protocol              = "HTTP"
+  timeout_sec           = 30
+  session_affinity      = "NONE"
+  health_checks         = [google_compute_health_check.webapp_health_check.self_link]
+ 
+  backend {
+    group           = google_compute_region_instance_group_manager.webapp_group_manager.instance_group
+    balancing_mode  = "UTILIZATION"
+    capacity_scaler = 1.0
+  }
+}
+ 
+resource "google_compute_url_map" "webapp_url_map" {
+  name            = "urlmap"
+  default_service = google_compute_backend_service.webapp_backend_service.self_link
+}
+ 
+resource "google_compute_target_https_proxy" "webapp_https_proxy" {
+  name             = "proxyname"
+  url_map          = google_compute_url_map.webapp_url_map.self_link
+  ssl_certificates = [google_compute_managed_ssl_certificate.sslcert.self_link]
+}
+resource "google_compute_global_address" "lb_ipv4_address" {
+ 
+  name = "lb-ipv4-address"
+}
+resource "google_compute_global_forwarding_rule" "webapp_forwarding_rule" {
+  name                  = "forwardingrulename"
+  ip_protocol           = "TCP"
+  load_balancing_scheme = "EXTERNAL_MANAGED"
+  ip_address            = google_compute_global_address.lb_ipv4_address.address
+  port_range            =  "443"
+  target                = google_compute_target_https_proxy.webapp_https_proxy.id
+}
+ 
+
+
+
+
