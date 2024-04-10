@@ -137,4 +137,8 @@ variable "db_user" {
   description = "The name of the database user."
 }
 
+variable "secret_id" {
+  description = "This is secret id for database."
+}
+
 
