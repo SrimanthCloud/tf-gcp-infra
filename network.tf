@@ -44,7 +44,7 @@ resource "google_compute_firewall" "webapplication" {
     ports    = [var.app_port]
   }
 
-  source_ranges = ["130.211.0.0/22", "35.191.0.0/16"]
+  source_ranges = [ "35.191.0.0/16" ,"130.211.0.0/22"]
 }
 
 resource "google_compute_firewall" "deny_ssh" {
@@ -70,6 +70,9 @@ resource "google_compute_region_instance_template" "vm_instance" {
     boot         = true
     disk_size_gb = var.vm_disk_size_gb
     disk_type    = var.vm_disk_type
+    disk_encryption_key {
+      kms_key_self_link = google_kms_crypto_key.vm_machine_key.id
+    }
   }
 
   network_interface {
@@ -77,7 +80,7 @@ resource "google_compute_region_instance_template" "vm_instance" {
     subnetwork = google_compute_subnetwork.webapp_subnet.id
 
     access_config {
-      nat_ip = google_compute_address.static_ip.address
+      network_tier = "PREMIUM"
       
     }
   }
@@ -141,7 +144,7 @@ resource "google_dns_record_set" "dns_record" {
   type         = "A"
   ttl          = 300
   managed_zone = data.google_dns_managed_zone.dns_zone.name
-  rrdatas      = [google_compute_address.static_ip.address]
+  rrdatas      = [google_compute_global_forwarding_rule.webapp_forwarding_rule.ip_address]
  
 }
 
@@ -179,6 +182,7 @@ resource "google_sql_database_instance" "cloudsql_instance" {
   database_version    = var.database_version
   deletion_protection = false
   depends_on          = [google_service_networking_connection.private_vpc_connection]
+  encryption_key_name = google_kms_crypto_key.cloudSql_key.id
 
   settings {
     tier              = "db-custom-1-3840"
@@ -283,7 +287,17 @@ resource "google_vpc_access_connector" "vpc_connector" {
  
 resource "google_storage_bucket" "serverless-bucket" {
   name     = "cloud-serverless"
-  location = "US"
+  location = var.region
+  storage_class = "STANDARD"
+  encryption {
+    default_kms_key_name = google_kms_crypto_key.cloudStorage_key.id
+  }
+ 
+  depends_on = [google_kms_crypto_key_iam_binding.encrypter_decrypter]
+
+  
+
+  uniform_bucket_level_access = true
 }
  
 resource "google_storage_bucket_object" "serverless-archive" {
@@ -356,8 +370,8 @@ resource "google_compute_region_autoscaler" "webapp_autoscaler" {
   target = google_compute_region_instance_group_manager.webapp_group_manager.id
 
   autoscaling_policy {
-    max_replicas    = 6
-    min_replicas    = 3
+    max_replicas    = 4
+    min_replicas    = 1
     cooldown_period = 60
 
     cpu_utilization {
@@ -372,6 +386,7 @@ resource "google_compute_region_instance_group_manager" "webapp_group_manager" {
   region   = var.region
   base_instance_name = "webapp"
   distribution_policy_zones = ["us-east1-b", "us-east1-c", "us-east1-d"] 
+  target_size = 1
 
 
   version {
@@ -390,13 +405,15 @@ resource "google_compute_region_instance_group_manager" "webapp_group_manager" {
     initial_delay_sec = 120
   }
 
+  
+  
 }
 
 resource "google_compute_backend_service" "webapp_backend_service" {
   name                  = "backendservicename"
-  load_balancing_scheme = "EXTERNAL_MANAGED"
-  port_name             = "http"
-  protocol              = "HTTP"
+  load_balancing_scheme = "EXTERNAL_MANAGED"  
+  port_name             = "http" 
+  protocol              = "HTTP" 
   timeout_sec           = 30
   session_affinity      = "NONE"
   health_checks         = [google_compute_health_check.webapp_health_check.self_link]
@@ -414,7 +431,7 @@ resource "google_compute_url_map" "webapp_url_map" {
 }
  
 resource "google_compute_target_https_proxy" "webapp_https_proxy" {
-  name             = "proxyname"
+  name             = "proxyname" 
   url_map          = google_compute_url_map.webapp_url_map.self_link
   ssl_certificates = [google_compute_managed_ssl_certificate.sslcert.self_link]
 }
@@ -423,15 +440,112 @@ resource "google_compute_global_address" "lb_ipv4_address" {
   name = "lb-ipv4-address"
 }
 resource "google_compute_global_forwarding_rule" "webapp_forwarding_rule" {
-  name                  = "forwardingrulename"
-  ip_protocol           = "TCP"
-  load_balancing_scheme = "EXTERNAL_MANAGED"
+  name                  = "forwardingrulename" 
+  ip_protocol           = "TCP" 
+  load_balancing_scheme = "EXTERNAL_MANAGED" 
   ip_address            = google_compute_global_address.lb_ipv4_address.address
-  port_range            =  "443"
+  port_range            =  "443" 
   target                = google_compute_target_https_proxy.webapp_https_proxy.id
 }
+
+resource "google_compute_firewall" "webapp-health-check" {
+  name          = "webapphealthcheck"
+  direction     = "INGRESS"
+  network       = google_compute_network.vpc.self_link
+  source_ranges = [ "130.211.0.0/22" ,"35.191.0.0/16"]
+  allow {
+    protocol = "tcp"
+    ports    = [var.app_port]
+  }
+  
+}
+
+resource "google_kms_key_ring" "webapp_keyring" {
+  name     = "webapp-keyring-3"
+  location = var.region
+}
  
+resource "google_kms_crypto_key" "vm_machine_key" {
+  name            = "vm-machine-key-3"
+  key_ring        = google_kms_key_ring.webapp_keyring.id
+  rotation_period = "2592000s"
+ 
+  lifecycle {
+    prevent_destroy = false
+  }
+}
+ 
+resource "google_kms_crypto_key" "cloudSql_key" {
+  name            = "cloud-sql-key-3"
+  key_ring        = google_kms_key_ring.webapp_keyring.id
+  rotation_period = "2592000s"
+ 
+  lifecycle {
+    prevent_destroy = false
+  }
+}
+ 
+resource "google_kms_crypto_key" "cloudStorage_key" {
+  name            = "cloud-storage-key-3"
+  key_ring        = google_kms_key_ring.webapp_keyring.id
+  rotation_period = "2592000s"
+ 
+  lifecycle {
+    prevent_destroy = false
+  }
+}
+ 
+resource "google_kms_crypto_key_iam_binding" "cloudSql_crypto_key" {
+  crypto_key_id = google_kms_crypto_key.cloudSql_key.id
+  role          = "roles/cloudkms.cryptoKeyEncrypterDecrypter"
+ 
+  members = [
+    "serviceAccount:${google_project_service_identity.gcp_sa_cloud_sql.email}",
+  ]
+}
+ 
+resource "google_project_service_identity" "gcp_sa_cloud_sql" {
+  provider = google-beta
+  project  = var.project_id
+  service  = "sqladmin.googleapis.com"
+}
 
+ 
+data "google_storage_project_service_account" "googlecloudserviceacc" {
+}
+ 
+ 
+resource "google_kms_crypto_key_iam_binding" "encrypter_decrypter" {
+  crypto_key_id = google_kms_crypto_key.cloudStorage_key.id
+  role          = "roles/cloudkms.cryptoKeyEncrypterDecrypter"
+  members = ["serviceAccount:${data.google_storage_project_service_account.googlecloudserviceacc.email_address}"
+            ]
+}
+ 
+ 
+ 
+data "google_project" "project" {}
+ 
+resource "google_kms_crypto_key_iam_binding" "vm_encrypter_decrypter" {
+  crypto_key_id = google_kms_crypto_key.vm_machine_key.id
+  role          = "roles/cloudkms.cryptoKeyEncrypterDecrypter"
+ 
+  members = [
+    "serviceAccount:service-${data.google_project.project.number}@compute-system.iam.gserviceaccount.com",
+  ]
+}
 
+resource "google_secret_manager_secret" "sql_password" {
+  secret_id = var.secret_id
+ 
+  replication {
+     auto {}
+  }
+}
+ 
+resource "google_secret_manager_secret_version" "sql_password_version" {
+  secret      = google_secret_manager_secret.sql_password.id
+  secret_data = random_password.password.result 
+}
 
-
+ 
